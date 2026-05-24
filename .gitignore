@@ -1,0 +1,8 @@
+node_modules/
+.tmp-sengpt-check/
+.DS_Store
+dist/
+coverage/
+*.log
+.env
+.env.*

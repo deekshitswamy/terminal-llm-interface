@@ -1,0 +1,35 @@
+{
+  "name": "terminal-llm-interface",
+  "version": "0.1.0",
+  "description": "A chalk-powered terminal chat interface for browser-backed ChatGPT, local Ollama, and macOS text-to-speech.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "terminal-chat": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node ./src/index.js",
+    "setup:sengpt": "bash ./scripts/setup-sengpt.sh",
+    "setup:chatgpt-browser": "bash ./scripts/setup-chatgpt-browser.sh",
+    "start:chatgpt-browser": "bash ./scripts/start-chatgpt-browser.sh",
+    "stop:chatgpt-browser": "bash ./scripts/stop-chatgpt-browser.sh",
+    "login:chatgpt-browser": "bash ./scripts/open-chatgpt-browser-login.sh",
+    "doctor": "node ./src/index.js --doctor"
+  },
+  "keywords": [
+    "chatgpt",
+    "terminal",
+    "chalk",
+    "tui",
+    "themes",
+    "tts",
+    "sengpt",
+    "browser-automation"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^5.3.0"
+  }
+}
