@@ -75,6 +75,8 @@ const COMMAND_SUGGESTIONS = [
   "/quit"
 ];
 
+const SUPPORTED_BACKENDS = ["chatgpt-browser", "ollama", "sengpt"];
+
 function normalizeCommand(line) {
   const [command, ...rest] = line.trim().split(/\s+/u);
   return {
@@ -126,6 +128,75 @@ function rankCommandSuggestions(input) {
     .sort((left, right) => right.score - left.score)
     .slice(0, 4)
     .map((entry) => entry.command.trim());
+}
+
+function parseCliArgs(argv) {
+  const parsedArgs = {};
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg.startsWith("--bot=")) {
+      parsedArgs.bot = arg.slice(6);
+    } else if (arg === "--bot") {
+      parsedArgs.bot = argv[i + 1];
+      i += 1;
+    } else if (arg.startsWith("--choose=")) {
+      parsedArgs.choose = arg.slice(9);
+    } else if (arg === "--choose") {
+      parsedArgs.choose = argv[i + 1];
+      i += 1;
+    } else if (arg.startsWith("--prompt=")) {
+      parsedArgs.prompt = arg.slice(9);
+    } else if (arg === "--prompt") {
+      parsedArgs.prompt = argv[i + 1];
+      i += 1;
+    }
+  }
+
+  return parsedArgs;
+}
+
+function resetLocalConversationState(state) {
+  state.conversationId = "";
+  state.lastResponse = "";
+  state.messages = [];
+}
+
+async function resetSavedConversationState(state) {
+  resetLocalConversationState(state);
+  await saveState(state);
+}
+
+function getConfiguredModel(config) {
+  if (config.backend === "ollama") {
+    return config.ollama.model;
+  }
+
+  if (config.backend === "chatgpt-browser") {
+    return config.chatgptBrowser.model;
+  }
+
+  return config.sengpt.model;
+}
+
+function getAssistantLabel(config) {
+  if (config.backend === "ollama") {
+    return config.identity.assistantLabel || config.ollama.model;
+  }
+
+  return config.identity.assistantLabel;
+}
+
+function getLoadingLabel(config) {
+  if (config.backend === "ollama") {
+    return "querying local model";
+  }
+
+  if (config.backend === "chatgpt-browser") {
+    return "routing through browser relay";
+  }
+
+  return "contacting legacy bridge";
 }
 
 async function promptSessionToken(rl) {
@@ -275,6 +346,64 @@ async function chooseVoiceFromMenu(rl, config) {
   }
 }
 
+async function chooseChatThread(rl, config, state) {
+  printInfo("Fetching recent ChatGPT conversations...");
+
+  const threads = await listThreads(config);
+  if (threads.length === 0) {
+    await resetSavedConversationState(state);
+    printWarning("No recent chats were found. Starting a new chat.");
+    return;
+  }
+
+  const visibleThreads = threads.slice(0, 12);
+  const savedIndex = visibleThreads.findIndex((thread) => thread.id === state.conversationId);
+
+  printPanel("RECENT CHATS", [
+    ...visibleThreads.map((thread, index) => {
+      const prefix = `${String(index + 1).padStart(2, " ")}.`;
+      const status = index === savedIndex ? " [current]" : "";
+      const title = thread.title?.replace(/\s+/gu, " ").trim() || "(Untitled Chat)";
+      return `${prefix} ${title}${status}`;
+    }),
+    "",
+    "n. Start new chat",
+    ...(savedIndex >= 0 ? ["Enter: keep current chat"] : [])
+  ]);
+
+  while (true) {
+    const answer = (await rl.question("chat > ")).trim();
+
+    if (!answer && savedIndex >= 0) {
+      const thread = visibleThreads[savedIndex];
+      resetLocalConversationState(state);
+      state.conversationId = thread.id;
+      await saveState(state);
+      printSuccess(`Keeping chat: "${thread.title || "(Untitled Chat)"}"`);
+      return;
+    }
+
+    if (!answer || answer.toLowerCase() === "n" || answer.toLowerCase() === "x") {
+      await resetSavedConversationState(state);
+      printSuccess("Starting a new chat.");
+      return;
+    }
+
+    const index = Number.parseInt(answer, 10);
+    if (Number.isFinite(index) && index >= 1 && index <= visibleThreads.length) {
+      const thread = visibleThreads[index - 1];
+      resetLocalConversationState(state);
+      state.conversationId = thread.id;
+      await saveState(state);
+      printSuccess(`Loaded chat: "${thread.title || "(Untitled Chat)"}"`);
+      return;
+    }
+
+    const enterHint = savedIndex >= 0 ? ", Enter" : "";
+    printWarning(`Choose 1-${visibleThreads.length}, n${enterHint}.`);
+  }
+}
+
 async function openTerminalConfig(rl, config) {
   while (true) {
     printPanel("TERMINAL CONTROL", [
@@ -377,34 +506,37 @@ async function openTerminalConfig(rl, config) {
   }
 }
 
+async function ensureChatgptRelayReady(config) {
+  let status = await getBackendStatus(config);
+
+  if (!status.ok) {
+    printInfo("Starting headless ChatGPT relay in the background...");
+    await startChatgptGateway();
+    status = await getBackendStatus(config);
+  }
+
+  if (status.ok && status.loggedIn) {
+    return { ready: true, status };
+  }
+
+  if (status.ok && !status.loggedIn) {
+    printInfo("ChatGPT login is required. Opening the visible login helper...");
+    await stopChatgptGateway();
+    await openChatgptGatewayLogin();
+    printSuccess("Login helper opened. Sign in there, then rerun `npm start` to choose a chat.");
+    return { ready: false, status };
+  }
+
+  return { ready: false, status };
+}
+
 async function main() {
   await ensureAppDirs();
   const config = await loadConfig();
   const state = await loadState();
   setUiConfig(config);
 
-  // Parse command line options
-  const args = process.argv;
-  const parsedArgs = {};
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg.startsWith("--bot=")) {
-      parsedArgs.bot = arg.slice(6);
-    } else if (arg === "--bot") {
-      parsedArgs.bot = args[i + 1];
-      i++;
-    } else if (arg.startsWith("--choose=")) {
-      parsedArgs.choose = arg.slice(9);
-    } else if (arg === "--choose") {
-      parsedArgs.choose = args[i + 1];
-      i++;
-    } else if (arg.startsWith("--prompt=")) {
-      parsedArgs.prompt = arg.slice(9);
-    } else if (arg === "--prompt") {
-      parsedArgs.prompt = args[i + 1];
-      i++;
-    }
-  }
+  const parsedArgs = parseCliArgs(process.argv);
 
   if (process.argv.includes("--doctor")) {
     await handleDoctor(config);
@@ -427,29 +559,12 @@ async function main() {
   }
 
   if (parsedArgs.choose && parsedArgs.choose.startsWith("new:")) {
-    state.conversationId = "";
-    state.lastResponse = "";
-    state.messages = [];
-    await saveState(state);
+    await resetSavedConversationState(state);
   }
 
   if (!(await canUseLocalTts())) {
     config.tts.enabled = false;
     await saveConfig(config);
-  }
-
-  if (config.backend === "chatgpt-browser" && config.terminal.autoRestartRelay) {
-    try {
-      await stopChatgptGateway();
-    } catch {
-      // Ignore stop errors on boot; start handles the real health check.
-    }
-
-    try {
-      await startChatgptGateway();
-    } catch (error) {
-      console.error(`ChatGPT relay auto-start failed: ${error.message}`);
-    }
   }
 
   const rl = readline.createInterface({
@@ -465,56 +580,36 @@ async function main() {
     process.exit(0);
   });
 
+  if (config.backend === "chatgpt-browser" && config.terminal.autoRestartRelay) {
+    try {
+      const relay = await ensureChatgptRelayReady(config);
+      if (!relay.ready) {
+        rl.close();
+        return;
+      }
+    } catch (error) {
+      printError(`ChatGPT relay startup failed: ${error.message}`);
+      rl.close();
+      return;
+    }
+  }
+
+  // If no choose option or prompt is specified, always ask the user which chat to continue from by default!
+  if (!parsedArgs.choose && !parsedArgs.prompt) {
+    parsedArgs.choose = "from-chat-history";
+  }
+
   if (parsedArgs.choose) {
     const chooseVal = parsedArgs.choose;
     if (chooseVal === "from-chat-history") {
-      printInfo("Fetching recent chat history...");
       try {
-        const threads = await listThreads(config);
-        if (threads.length === 0) {
-          printWarning("No recent chat history found.");
-        } else {
-          printPanel(
-            "CHOOSE CHAT HISTORY",
-            threads.map((t, idx) => `${idx + 1}. ${t.title || "(Untitled Chat)"}`)
-          );
-
-          let selectedIdx = null;
-          while (selectedIdx === null) {
-            const ans = (await rl.question("select chat index (or 'x' for new) > ")).trim();
-            if (ans.toLowerCase() === "x") {
-              state.conversationId = "";
-              state.lastResponse = "";
-              state.messages = [];
-              await saveState(state);
-              printSuccess("Starting a new chat session.");
-              break;
-            }
-            const idx = parseInt(ans, 10);
-            if (Number.isFinite(idx) && idx >= 1 && idx <= threads.length) {
-              selectedIdx = idx - 1;
-            } else {
-              printWarning(`Please enter a number between 1 and ${threads.length}, or 'x'.`);
-            }
-          }
-          if (selectedIdx !== null) {
-            const thread = threads[selectedIdx];
-            state.conversationId = thread.id;
-            state.lastResponse = "";
-            state.messages = [];
-            await saveState(state);
-            printSuccess(`Loaded conversation: "${thread.title || "(Untitled Chat)"}"`);
-          }
-        }
+        await chooseChatThread(rl, config, state);
       } catch (error) {
         printError(`Failed to load chat history: ${error.message}`);
       }
     } else if (chooseVal.startsWith("new:")) {
       const chatName = chooseVal.slice(4);
-      state.conversationId = "";
-      state.lastResponse = "";
-      state.messages = [];
-      await saveState(state);
+      await resetSavedConversationState(state);
       printSuccess(`Starting new chat session: "${chatName}"`);
     } else if (chooseVal.startsWith("name:")) {
       const targetName = chooseVal.slice(5).toLowerCase();
@@ -523,26 +618,21 @@ async function main() {
         const threads = await listThreads(config);
         const match = threads.find(t => (t.title || "").toLowerCase().includes(targetName));
         if (match) {
+          resetLocalConversationState(state);
           state.conversationId = match.id;
-          state.lastResponse = "";
-          state.messages = [];
           await saveState(state);
           printSuccess(`Resuming matching chat: "${match.title}"`);
         } else {
           printWarning(`No matching chat found for "${targetName}". Starting a new chat session.`);
-          state.conversationId = "";
-          state.lastResponse = "";
-          state.messages = [];
-          await saveState(state);
+          await resetSavedConversationState(state);
         }
       } catch (error) {
         printError(`Failed to search chat history: ${error.message}`);
       }
     } else {
       // Treat as direct chat-id
+      resetLocalConversationState(state);
       state.conversationId = chooseVal;
-      state.lastResponse = "";
-      state.messages = [];
       await saveState(state);
       printSuccess(`Resuming specific chat ID: "${chooseVal}"`);
     }
@@ -624,15 +714,13 @@ async function main() {
 
       if (command === "/backend") {
         const backend = args[0]?.toLowerCase();
-        if (!["chatgpt-browser", "ollama", "sengpt"].includes(backend)) {
+        if (!SUPPORTED_BACKENDS.includes(backend)) {
           printWarning("Usage: /backend chatgpt-browser, /backend ollama, or /backend sengpt");
           continue;
         }
 
         config.backend = backend;
-        state.conversationId = "";
-        state.lastResponse = "";
-        state.messages = [];
+        resetLocalConversationState(state);
         await saveConfig(config);
         setUiConfig(config);
         await saveState(state);
@@ -682,9 +770,14 @@ async function main() {
           }
 
           if (action === "login") {
-            const output = await openChatgptGatewayLogin();
-            printSuccess(output || "Opened the ChatGPT gateway login page.");
-            continue;
+            await stopChatgptGateway();
+            await openChatgptGatewayLogin();
+            printSuccess(
+              "Opened the ChatGPT login helper. This terminal chat session will close while you sign in."
+            );
+            await stopSpeaking(config);
+            rl.close();
+            return;
           }
 
           if (action === "stop") {
@@ -755,10 +848,7 @@ async function main() {
           printWarning(error.message);
         }
 
-        state.conversationId = "";
-        state.lastResponse = "";
-        state.messages = [];
-        await saveState(state);
+        await resetSavedConversationState(state);
         printSuccess("Started a fresh conversation.");
         continue;
       }
@@ -876,8 +966,7 @@ async function main() {
         } else {
           config.sengpt.model = model;
         }
-        state.conversationId = "";
-        state.messages = [];
+        resetLocalConversationState(state);
         await saveConfig(config);
         await saveState(state);
         printSuccess(`Model set to ${model}. A new conversation will be used next.`);
@@ -922,16 +1011,8 @@ async function main() {
       continue;
     }
 
-    const assistantLabel =
-      config.backend === "ollama"
-        ? config.identity.assistantLabel || config.ollama.model
-        : config.identity.assistantLabel;
-    const loadingLabel =
-      config.backend === "ollama"
-        ? "querying local model"
-        : config.backend === "chatgpt-browser"
-          ? "routing through browser relay"
-          : "contacting legacy bridge";
+    const assistantLabel = getAssistantLabel(config);
+    const loadingLabel = getLoadingLabel(config);
     let responseText = "";
     let didRenderResponse = false;
     const stopLoadingIndicator = startLoadingIndicator(loadingLabel);
@@ -976,12 +1057,7 @@ async function main() {
         response: state.lastResponse,
         conversationId: state.conversationId,
         backend: config.backend,
-        model:
-          config.backend === "ollama"
-            ? config.ollama.model
-            : config.backend === "chatgpt-browser"
-              ? config.chatgptBrowser.model
-              : config.sengpt.model
+        model: getConfiguredModel(config)
       });
 
       await saveState(state);

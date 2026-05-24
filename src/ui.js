@@ -204,7 +204,7 @@ export function printHelp() {
       "/backend NAME              switch backend: chatgpt-browser, ollama, sengpt",
       "/chatgpt setup             install the browser-backed ChatGPT gateway",
       "/chatgpt start             start the browser-backed ChatGPT gateway",
-      "/chatgpt login             open the one-time ChatGPT browser login window",
+      "/chatgpt login             open the ChatGPT login helper, then close this session",
       "/chatgpt stop              stop the browser-backed ChatGPT gateway",
       "/name me NAME              change your chat tag",
       "/name bot NAME             change the assistant chat tag",
