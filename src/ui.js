@@ -117,7 +117,7 @@ export function printBanner(config, state) {
     `theme    ${getThemePreset(config.appearance.theme).name}`,
     `glyphs   ${getGlyphPreset(config.appearance.glyphs).name}`,
     `chat     ${config.identity.userLabel} > ${config.identity.assistantLabel} >`,
-    `voice    ${config.tts.enabled ? `${config.tts.voice} local-say` : "muted"}`,
+    `voice    ${config.tts.enabled ? (config.tts.engine === "browser" ? "browser-native" : `${config.tts.voice} local-say`) : "muted"}`,
     `thread   ${state.conversationId ? "resuming saved session" : "fresh session"}`
   ];
 
@@ -254,8 +254,8 @@ export function printStatus(config, backendStatus) {
   lines.push(`glyphs   ${getGlyphPreset(config.appearance.glyphs).name}`);
   lines.push(`you      ${config.identity.userLabel}`);
   lines.push(`bot      ${config.identity.assistantLabel}`);
-  lines.push(`tts      ${config.tts.enabled ? "enabled" : "disabled"}`);
-  lines.push(`voice    ${config.tts.voice}`);
+  lines.push(`tts      ${config.tts.enabled ? `enabled (${config.tts.engine || "say"})` : "disabled"}`);
+  lines.push(`voice    ${config.tts.engine === "browser" ? "browser-native" : config.tts.voice}`);
   lines.push(`config   ${CONFIG_PATH}`);
   lines.push(`state    ${STATE_PATH}`);
   lines.push(`logs     ${LOG_PATH}`);

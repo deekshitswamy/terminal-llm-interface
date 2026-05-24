@@ -193,3 +193,32 @@ export async function listChatgptBrowserThreads(config) {
   const data = await response.json();
   return data.threads || [];
 }
+
+export async function speakChatgptBrowserResponse(config) {
+  let response;
+  try {
+    response = await fetch(buildGatewayUrl(config, "/thread/read-aloud"), {
+      method: "POST",
+      headers: buildHeaders(config)
+    });
+  } catch (error) {
+    throw normalizeGatewayError(error);
+  }
+
+  if (!response.ok) {
+    throw new Error(await parseErrorResponse(response));
+  }
+
+  return response.json();
+}
+
+export async function stopChatgptBrowserSpeaking(config) {
+  try {
+    await fetch(buildGatewayUrl(config, "/thread/stop-speaking"), {
+      method: "POST",
+      headers: buildHeaders(config)
+    });
+  } catch {
+    // Ignore offline/connection errors on stop
+  }
+}

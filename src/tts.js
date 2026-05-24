@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { speakBrowserResponse, stopBrowserSpeaking } from "./backend.js";
 
 let activeSpeechProcess = null;
 
@@ -52,7 +53,15 @@ export async function listVoices() {
   });
 }
 
-export async function stopSpeaking() {
+export async function stopSpeaking(config) {
+  if (config && config.tts && config.tts.engine === "browser") {
+    try {
+      await stopBrowserSpeaking(config);
+    } catch {
+      // Ignore
+    }
+  }
+
   if (activeSpeechProcess && !activeSpeechProcess.killed) {
     activeSpeechProcess.kill("SIGTERM");
   }
@@ -60,12 +69,26 @@ export async function stopSpeaking() {
   activeSpeechProcess = null;
 }
 
-export async function speakText(text, settings) {
-  if (!text.trim() || settings.engine !== "say") {
+export async function speakText(text, settings, config) {
+  if (!text.trim()) {
     return;
   }
 
-  await stopSpeaking();
+  if (settings.engine === "browser") {
+    await stopSpeaking(config);
+    try {
+      await speakBrowserResponse(config);
+    } catch (error) {
+      console.error(`Browser speech failed: ${error.message}`);
+    }
+    return;
+  }
+
+  if (settings.engine !== "say") {
+    return;
+  }
+
+  await stopSpeaking(config);
 
   const tempFile = path.join(
     os.tmpdir(),

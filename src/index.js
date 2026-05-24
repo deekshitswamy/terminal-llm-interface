@@ -365,11 +365,11 @@ async function openTerminalConfig(rl, config) {
     }
 
     if (answer === "7") {
-      await stopSpeaking();
-      void speakText("This is your current local voice preview.", config.tts).catch((error) => {
+      await stopSpeaking(config);
+      void speakText("This is your current local voice preview.", config.tts, config).catch((error) => {
         printError(error.message);
       });
-      printInfo(`Previewing ${config.tts.voice}.`);
+      printInfo(`Previewing ${config.tts.engine === "browser" ? "browser-native" : config.tts.voice}.`);
       continue;
     }
 
@@ -460,7 +460,7 @@ async function main() {
   });
 
   process.on("SIGINT", async () => {
-    await stopSpeaking();
+    await stopSpeaking(config);
     rl.close();
     process.exit(0);
   });
@@ -593,7 +593,7 @@ async function main() {
       const { command, args } = normalizeCommand(line);
 
       if (command === "/quit" || command === "/exit") {
-        await stopSpeaking();
+        await stopSpeaking(config);
         rl.close();
         return;
       }
@@ -644,7 +644,7 @@ async function main() {
         const action = args[0]?.toLowerCase();
 
         if (action === "stop") {
-          await stopSpeaking();
+          await stopSpeaking(config);
           rl.close();
           return;
         }
@@ -769,9 +769,24 @@ async function main() {
           config.tts.enabled = true;
         } else if (option === "off") {
           config.tts.enabled = false;
-          await stopSpeaking();
+          await stopSpeaking(config);
+        } else if (option === "engine") {
+          const engineVal = args[1]?.toLowerCase();
+          if (["say", "browser"].includes(engineVal)) {
+            config.tts.engine = engineVal;
+            await stopSpeaking(config);
+            await saveConfig(config);
+            printSuccess(`TTS engine set to ${engineVal}.`);
+            continue;
+          } else {
+            printWarning("Usage: /tts engine say  |  /tts engine browser");
+            continue;
+          }
         } else {
           config.tts.enabled = !config.tts.enabled;
+          if (!config.tts.enabled) {
+            await stopSpeaking(config);
+          }
         }
 
         await saveConfig(config);
@@ -795,11 +810,11 @@ async function main() {
           }
 
           try {
-            await stopSpeaking();
+            await stopSpeaking(config);
             void speakText("Voice preview from your terminal chat.", {
               ...config.tts,
               voice
-            }).catch((error) => {
+            }, config).catch((error) => {
               printError(error.message);
             });
             printSuccess(`Previewing ${voice}.`);
@@ -838,7 +853,7 @@ async function main() {
         }
 
         try {
-          void speakText(state.lastResponse, config.tts).catch((error) => {
+          void speakText(state.lastResponse, config.tts, config).catch((error) => {
             printError(error.message);
           });
         } catch (error) {
@@ -922,7 +937,7 @@ async function main() {
     const stopLoadingIndicator = startLoadingIndicator(loadingLabel);
 
     try {
-      await stopSpeaking();
+      await stopSpeaking(config);
       const result = await sendMessage({
         config,
         state,
@@ -972,7 +987,7 @@ async function main() {
       await saveState(state);
 
       if (config.tts.enabled && state.lastResponse) {
-        void speakText(state.lastResponse, config.tts).catch((error) => {
+        void speakText(state.lastResponse, config.tts, config).catch((error) => {
           printError(error.message);
         });
       }

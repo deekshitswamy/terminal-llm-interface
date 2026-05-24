@@ -4,7 +4,9 @@ import {
   listChatgptBrowserModels,
   resetChatgptBrowserConversation,
   sendChatgptBrowserMessage,
-  listChatgptBrowserThreads
+  listChatgptBrowserThreads,
+  speakChatgptBrowserResponse,
+  stopChatgptBrowserSpeaking
 } from "./backend-chatgpt-browser.js";
 import {
   doctorOllama,
@@ -91,4 +93,16 @@ export async function listThreads(config) {
     return listChatgptBrowserThreads(config);
   }
   return [];
+}
+
+export async function speakBrowserResponse(config) {
+  if (config.backend === "chatgpt-browser") {
+    return speakChatgptBrowserResponse(config);
+  }
+}
+
+export async function stopBrowserSpeaking(config) {
+  if (config.backend === "chatgpt-browser") {
+    return stopChatgptBrowserSpeaking(config);
+  }
 }
