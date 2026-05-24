@@ -199,6 +199,13 @@ function getLoadingLabel(config) {
   return "contacting legacy bridge";
 }
 
+async function terminateTerminalSession(rl, config) {
+  await stopSpeaking(config);
+  if (!rl.closed) {
+    rl.close();
+  }
+}
+
 async function promptSessionToken(rl) {
   rl.pause();
 
@@ -575,8 +582,7 @@ async function main() {
   });
 
   process.on("SIGINT", async () => {
-    await stopSpeaking(config);
-    rl.close();
+    await terminateTerminalSession(rl, config);
     process.exit(0);
   });
 
@@ -683,8 +689,7 @@ async function main() {
       const { command, args } = normalizeCommand(line);
 
       if (command === "/quit" || command === "/exit") {
-        await stopSpeaking(config);
-        rl.close();
+        await terminateTerminalSession(rl, config);
         return;
       }
 
@@ -732,8 +737,7 @@ async function main() {
         const action = args[0]?.toLowerCase();
 
         if (action === "stop") {
-          await stopSpeaking(config);
-          rl.close();
+          await terminateTerminalSession(rl, config);
           return;
         }
 
@@ -775,8 +779,7 @@ async function main() {
             printSuccess(
               "Opened the ChatGPT login helper. This terminal chat session will close while you sign in."
             );
-            await stopSpeaking(config);
-            rl.close();
+            await terminateTerminalSession(rl, config);
             return;
           }
 
