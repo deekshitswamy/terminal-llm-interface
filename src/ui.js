@@ -95,12 +95,12 @@ function printTagged(tag, color, message) {
 }
 
 function renderSpeakerPill(label, color) {
-  return `${chalk.hex(color).bold(label)} ${chalk.hex(color).bold("> ")} `;
+  return `${chalk.hex(color).bold(label)} ${chalk.hex(color).bold(">>> ")}`;
 }
 
 function renderLanePreview(userLabel, botLabel) {
-  const userLane = `${chalk.hex(activeTheme.user).bold(userLabel)} ${chalk.hex(activeTheme.user).bold(">")}`;
-  const botLane = `${chalk.hex(activeTheme.assistant).bold(botLabel)} ${chalk.hex(activeTheme.assistant).bold(">")}`;
+  const userLane = `${chalk.hex(activeTheme.user).bold(userLabel)} ${chalk.hex(activeTheme.user).bold(">>>")}`;
+  const botLane = `${chalk.hex(activeTheme.assistant).bold(botLabel)} ${chalk.hex(activeTheme.assistant).bold(">>>")}`;
   return `${userLane}    ${chalk.hex(activeTheme.dim)("//")}    ${botLane}`;
 }
 
@@ -198,29 +198,14 @@ export function printHelp() {
   printPanel(
     "COMMAND DECK",
     [
-      "/help                      show this help",
-      "/terminal stop             close the current terminal chat session",
-      "/terminal config           open the in-terminal control deck",
-      "/backend NAME              switch backend: chatgpt-browser, ollama, sengpt",
-      "/chatgpt setup             install the browser-backed ChatGPT gateway",
-      "/chatgpt start             start the browser-backed ChatGPT gateway",
-      "/chatgpt login             open the ChatGPT login helper, then close this session",
-      "/chatgpt stop              stop the browser-backed ChatGPT gateway",
-      "/name me NAME              change your chat tag",
-      "/name bot NAME             change the assistant chat tag",
-      "/name show                 show current tags",
-      "/name reset                reset tags to defaults",
-      "/models                    list models for the active backend",
-      "/model NAME                change the active model",
-      "/login                     store session token for legacy Sengpt",
-      "/clear                     start a fresh conversation",
-      "/tts on|off|toggle         control local text-to-speech",
-      "/voice list                list installed macOS voices",
-      "/voice preview NAME        preview a voice immediately",
-      "/voice set NAME            change the TTS voice",
-      "/repeat                    replay the last spoken response",
-      "/status                    show backend, tag, and file locations",
-      "/quit                      exit the app"
+      "/help                      show this help menu",
+      "/llm <name>                switch active LLM backend (e.g. ollama, claude, openai)",
+      "/chatgpt chatlist          browse recent ChatGPT chats 10 at a time",
+      "/q or /quit                exit the chat session and release terminal",
+      "/clear                     start a fresh conversation thread",
+      "/tts on|off|toggle         enable or disable voice response",
+      "text:hello there           send explicit inline text",
+      "file:/path/to/PROMPT.md    send a prompt loaded from a file"
     ],
     activeTheme.panel
   );

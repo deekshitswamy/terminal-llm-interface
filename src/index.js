@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
+import { mcpClientInstance } from "./mcp-client.js";
 import readline from "node:readline/promises";
 import * as readlineUi from "node:readline";
+import path from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import {
   appendTranscript,
@@ -47,14 +49,13 @@ import {
 
 const COMMAND_SUGGESTIONS = [
   "/help",
-  "/terminal stop",
-  "/terminal config",
-  "/backend chatgpt-browser",
-  "/backend ollama",
-  "/backend sengpt",
+  "/llm chatgpt-browser",
+  "/llm ollama",
+  "/llm sengpt",
   "/chatgpt setup",
   "/chatgpt start",
   "/chatgpt login",
+  "/chatgpt chatlist",
   "/chatgpt stop",
   "/name me ",
   "/name bot ",
@@ -75,7 +76,7 @@ const COMMAND_SUGGESTIONS = [
   "/quit"
 ];
 
-const SUPPORTED_BACKENDS = ["chatgpt-browser", "ollama", "sengpt"];
+const SUPPORTED_BACKENDS = ["chatgpt-browser", "ollama", "sengpt", "openai", "claude", "gemini"];
 
 function normalizeCommand(line) {
   const [command, ...rest] = line.trim().split(/\s+/u);
@@ -156,6 +157,69 @@ function parseCliArgs(argv) {
   return parsedArgs;
 }
 
+function sanitizePromptPath(rawPath) {
+  const trimmed = String(rawPath ?? "").trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  if (
+    (trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+
+  return trimmed;
+}
+
+function formatChatTitle(thread) {
+  return thread?.title?.replace(/\s+/gu, " ").trim() || "(Untitled Chat)";
+}
+
+async function resolvePromptInput(rawInput, options = {}) {
+  const source = String(rawInput ?? "").trim();
+  const allowPromptFiles = options.allowPromptFiles !== false;
+
+  if (!source) {
+    return { prompt: "", display: "" };
+  }
+
+  const lower = source.toLowerCase();
+  if (lower.startsWith("text:") || lower.startsWith("txt:")) {
+    const prompt = source.slice(source.indexOf(":") + 1).trim();
+    if (!prompt) {
+      throw new Error("Prompt text is empty. Add text after `text:`.");
+    }
+
+    return { prompt, display: prompt };
+  }
+
+  if (lower.startsWith("file:") || lower.startsWith("path:")) {
+    if (!allowPromptFiles) {
+      throw new Error("Prompt files are disabled in this environment.");
+    }
+
+    const rawPath = sanitizePromptPath(source.slice(source.indexOf(":") + 1));
+    if (!rawPath) {
+      throw new Error("Prompt file path is empty. Add a path after `file:`.");
+    }
+
+    const resolvedPath = path.resolve(rawPath);
+    const prompt = await fs.readFile(resolvedPath, "utf8");
+    if (!prompt.trim()) {
+      throw new Error(`Prompt file "${resolvedPath}" is empty.`);
+    }
+
+    return {
+      prompt,
+      display: `file: ${resolvedPath}`
+    };
+  }
+
+  return { prompt: source, display: source };
+}
+
 function resetLocalConversationState(state) {
   state.conversationId = "";
   state.lastResponse = "";
@@ -174,6 +238,18 @@ function getConfiguredModel(config) {
 
   if (config.backend === "chatgpt-browser") {
     return config.chatgptBrowser.model;
+  }
+
+  if (config.backend === "openai") {
+    return config.openai.model;
+  }
+
+  if (config.backend === "claude") {
+    return config.claude.model;
+  }
+
+  if (config.backend === "gemini") {
+    return config.gemini.model;
   }
 
   return config.sengpt.model;
@@ -201,6 +277,9 @@ function getLoadingLabel(config) {
 
 async function terminateTerminalSession(rl, config) {
   await stopSpeaking(config);
+  try {
+    await mcpClientInstance.close();
+  } catch (e) {}
   if (!rl.closed) {
     rl.close();
   }
@@ -353,47 +432,99 @@ async function chooseVoiceFromMenu(rl, config) {
   }
 }
 
-async function chooseChatThread(rl, config, state) {
+async function chooseChatThread(rl, config, state, options = {}) {
+  const pageSize = options.pageSize ?? 10;
+  const title = options.title ?? "RECENT CHATS";
   printInfo("Fetching recent ChatGPT conversations...");
 
   const threads = await listThreads(config);
   if (threads.length === 0) {
     await resetSavedConversationState(state);
     printWarning("No recent chats were found. Starting a new chat.");
-    return;
+    return { action: "new" };
   }
 
-  const visibleThreads = threads.slice(0, 12);
-  const savedIndex = visibleThreads.findIndex((thread) => thread.id === state.conversationId);
-
-  printPanel("RECENT CHATS", [
-    ...visibleThreads.map((thread, index) => {
-      const prefix = `${String(index + 1).padStart(2, " ")}.`;
-      const status = index === savedIndex ? " [current]" : "";
-      const title = thread.title?.replace(/\s+/gu, " ").trim() || "(Untitled Chat)";
-      return `${prefix} ${title}${status}`;
-    }),
-    "",
-    "n. Start new chat",
-    ...(savedIndex >= 0 ? ["Enter: keep current chat"] : [])
-  ]);
-
+  let offset = 0;
   while (true) {
+    const visibleThreads = threads.slice(offset, offset + pageSize);
+    const currentThread = threads.find((thread) => thread.id === state.conversationId)
+      || (state.conversationId
+        ? { id: state.conversationId, title: state.conversationId }
+        : null);
+    const page = Math.floor(offset / pageSize) + 1;
+    const totalPages = Math.max(1, Math.ceil(threads.length / pageSize));
+
+    printPanel(`${title} ${page}/${totalPages}`, [
+      `showing ${offset + 1}-${offset + visibleThreads.length} of ${threads.length}`,
+      "",
+      ...visibleThreads.map((thread, index) => {
+        const prefix = `${index + 1}.`;
+        const status = thread.id === state.conversationId ? " [current]" : "";
+        return `${prefix} ${formatChatTitle(thread)}${status}`;
+      }),
+      "",
+      ...(offset + pageSize < threads.length ? ["m. See more"] : []),
+      ...(offset > 0 ? ["b. Previous 10"] : []),
+      "n. Start new chat",
+      ...(currentThread ? [`k. Keep current chat (${formatChatTitle(currentThread)})`] : []),
+      "x. Cancel"
+    ]);
+
     const answer = (await rl.question("chat > ")).trim();
 
-    if (!answer && savedIndex >= 0) {
-      const thread = visibleThreads[savedIndex];
-      resetLocalConversationState(state);
-      state.conversationId = thread.id;
-      await saveState(state);
-      printSuccess(`Keeping chat: "${thread.title || "(Untitled Chat)"}"`);
-      return;
-    }
+    if (!answer) {
+      if (currentThread) {
+        resetLocalConversationState(state);
+        state.conversationId = currentThread.id;
+        await saveState(state);
+        printSuccess(`Keeping chat: "${formatChatTitle(currentThread)}"`);
+        return { action: "keep", thread: currentThread };
+      }
 
-    if (!answer || answer.toLowerCase() === "n" || answer.toLowerCase() === "x") {
       await resetSavedConversationState(state);
       printSuccess("Starting a new chat.");
-      return;
+      return { action: "new" };
+    }
+
+    const normalized = answer.toLowerCase();
+
+    if (normalized === "m" || normalized === "more" || normalized === "next") {
+      if (offset + pageSize < threads.length) {
+        offset += pageSize;
+        continue;
+      }
+
+      printWarning("No more chats to show.");
+      continue;
+    }
+
+    if (normalized === "b" || normalized === "back" || normalized === "prev") {
+      if (offset > 0) {
+        offset = Math.max(0, offset - pageSize);
+        continue;
+      }
+
+      printWarning("You are already on the first page.");
+      continue;
+    }
+
+    if (normalized === "k" && currentThread) {
+      resetLocalConversationState(state);
+      state.conversationId = currentThread.id;
+      await saveState(state);
+      printSuccess(`Keeping chat: "${formatChatTitle(currentThread)}"`);
+      return { action: "keep", thread: currentThread };
+    }
+
+    if (normalized === "n") {
+      await resetSavedConversationState(state);
+      printSuccess("Starting a new chat.");
+      return { action: "new" };
+    }
+
+    if (normalized === "x") {
+      printInfo("Chat selection cancelled.");
+      return { action: "cancel" };
     }
 
     const index = Number.parseInt(answer, 10);
@@ -402,12 +533,19 @@ async function chooseChatThread(rl, config, state) {
       resetLocalConversationState(state);
       state.conversationId = thread.id;
       await saveState(state);
-      printSuccess(`Loaded chat: "${thread.title || "(Untitled Chat)"}"`);
-      return;
+      printSuccess(`Loaded chat: "${formatChatTitle(thread)}"`);
+      return { action: "thread", thread };
     }
 
-    const enterHint = savedIndex >= 0 ? ", Enter" : "";
-    printWarning(`Choose 1-${visibleThreads.length}, n${enterHint}.`);
+    const commands = [
+      `1-${visibleThreads.length}`,
+      "m",
+      ...(offset > 0 ? ["b"] : []),
+      "n",
+      ...(currentThread ? ["k"] : []),
+      "x"
+    ];
+    printWarning(`Choose ${commands.join(", ")}.`);
   }
 }
 
@@ -513,37 +651,131 @@ async function openTerminalConfig(rl, config) {
   }
 }
 
-async function ensureChatgptRelayReady(config) {
+async function ensureChatgptRelayReady(config, allowedFeatures = []) {
   let status = await getBackendStatus(config);
 
+  if (status.ok && status.loggedIn) {
+    return { ready: true, status, pendingLogin: false };
+  }
+
   if (!status.ok) {
-    printInfo("Starting headless ChatGPT relay in the background...");
-    await startChatgptGateway();
-    status = await getBackendStatus(config);
+    printInfo("Cleaning up previous ChatGPT relay processes...");
+    try {
+      await stopChatgptGateway();
+    } catch {
+      // Ignore cleanup failures; startup below will do the real verification.
+    }
+
+    printInfo("Starting background ChatGPT relay...");
+    try {
+      await startChatgptGateway();
+      // Poll for gateway to become fully ready. Cold browser startup and
+      // ChatGPT session hydration can take a little while.
+      let bootStatus = null;
+      for (let attempt = 1; attempt <= 15; attempt += 1) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          bootStatus = await getBackendStatus(config);
+          if (bootStatus.ok) {
+            status = bootStatus;
+            break;
+          }
+        } catch (e) {
+          // Ignored during startup
+        }
+      }
+    } catch (e) {
+      printWarning(`Failed to start ChatGPT gateway: ${e.message}`);
+      try {
+        status = await getBackendStatus(config);
+      } catch {
+        // If the relay truly is still down, later checks will handle it.
+      }
+    }
   }
 
   if (status.ok && status.loggedIn) {
-    return { ready: true, status };
+    return { ready: true, status, pendingLogin: false };
   }
 
   if (status.ok && !status.loggedIn) {
-    printInfo("ChatGPT login is required. Opening the visible login helper...");
-    await stopChatgptGateway();
-    await openChatgptGatewayLogin();
-    printSuccess("Login helper opened. Sign in there, then rerun `npm start` to choose a chat.");
-    return { ready: false, status };
+    if (allowedFeatures.includes("signin")) {
+      printInfo("ChatGPT login is required. Launching the interactive sign-in helper...");
+      try {
+        await stopChatgptGateway();
+        await openChatgptGatewayLogin();
+        printSuccess(
+          "Login helper opened. Finish sign-in there. It will start the hidden relay and close itself."
+        );
+        printInfo("After the helper closes, run `npm start` again to resume on ChatGPT.");
+        return { ready: false, status, pendingLogin: true };
+      } catch (e) {
+        printError(`Sign-in helper failed: ${e.message}`);
+      }
+    } else {
+      printWarning("\n  🔐 ChatGPT session is not logged in!");
+      printError("  Interactive browser sign-in is disabled in this context.");
+    }
+    return { ready: false, status, pendingLogin: false };
   }
 
-  return { ready: false, status };
+  return { ready: false, status, pendingLogin: false };
 }
 
-async function main() {
+export async function runTerminalChat(options = {}) {
   await ensureAppDirs();
   const config = await loadConfig();
   const state = await loadState();
+
+  // Apply programmatic configuration overrides
+  if (options.backend) {
+    config.backend = options.backend;
+  }
+  if (options.baseUrl) {
+    if (config.backend === "chatgpt-browser") config.chatgptBrowser.baseUrl = options.baseUrl;
+    else if (config.backend === "ollama") config.ollama.baseUrl = options.baseUrl;
+    else if (config.backend === "openai") config.openai.baseUrl = options.baseUrl;
+    else if (config.backend === "claude") config.claude.baseUrl = options.baseUrl;
+    else if (config.backend === "gemini") config.gemini.baseUrl = options.baseUrl;
+  }
+  if (options.apiKey) {
+    if (config.backend === "openai") config.openai.apiKey = options.apiKey;
+    else if (config.backend === "claude") config.claude.apiKey = options.apiKey;
+    else if (config.backend === "gemini") config.gemini.apiKey = options.apiKey;
+  }
+  if (options.model) {
+    if (config.backend === "chatgpt-browser") config.chatgptBrowser.model = options.model;
+    else if (config.backend === "ollama") config.ollama.model = options.model;
+    else if (config.backend === "openai") config.openai.model = options.model;
+    else if (config.backend === "claude") config.claude.model = options.model;
+    else if (config.backend === "gemini") config.gemini.model = options.model;
+  }
+  if (options.ttsEnabled !== undefined) {
+    config.tts.enabled = options.ttsEnabled;
+  }
+
+  // Force mute TTS response if host application specifies allowTts: false
+  const allowTts = options.allowTts !== undefined ? options.allowTts : true;
+  if (!allowTts) {
+    config.tts.enabled = false;
+  }
+
+  // Set Granular allowed TUI features (Defaults to all features exposed)
+  const allowedFeatures = options.allowedFeatures || ["chat-history", "signin", "custom-prompt", "regenerate"];
+
   setUiConfig(config);
 
+  if (config.backend === "ollama") {
+    printInfo("Initializing connection to Smart Home MCP server...");
+    await mcpClientInstance.connect();
+  }
+
   const parsedArgs = parseCliArgs(process.argv);
+
+  const hasCliArgs = process.argv.length > 2;
+  const hasProgrammaticOverrides = Object.keys(options).length > 0 && 
+                                    !(Object.keys(options).length === 1 && options.allowedFeatures);
+  const isNoOptionsCase = !hasCliArgs && !hasProgrammaticOverrides;
 
   if (process.argv.includes("--doctor")) {
     await handleDoctor(config);
@@ -552,14 +784,20 @@ async function main() {
 
   if (parsedArgs.bot) {
     const requestedBot = parsedArgs.bot.toLowerCase();
-    if (requestedBot === "chatgpt" || requestedBot === "chatgpt-browser") {
+    if (["chatgpt", "chatgpt-browser"].includes(requestedBot)) {
       config.backend = "chatgpt-browser";
     } else if (requestedBot === "ollama") {
       config.backend = "ollama";
     } else if (requestedBot === "sengpt") {
       config.backend = "sengpt";
+    } else if (requestedBot === "openai") {
+      config.backend = "openai";
+    } else if (requestedBot === "claude") {
+      config.backend = "claude";
+    } else if (requestedBot === "gemini") {
+      config.backend = "gemini";
     } else {
-      printWarning(`Unknown bot "${parsedArgs.bot}". Supported bots: chatgpt, ollama, sengpt.`);
+      printWarning(`Unknown bot "${parsedArgs.bot}". Supported bots: chatgpt, ollama, sengpt, openai, claude, gemini.`);
     }
     await saveConfig(config);
     setUiConfig(config);
@@ -588,32 +826,38 @@ async function main() {
 
   if (config.backend === "chatgpt-browser" && config.terminal.autoRestartRelay) {
     try {
-      const relay = await ensureChatgptRelayReady(config);
+      const relay = await ensureChatgptRelayReady(config, allowedFeatures);
       if (!relay.ready) {
-        rl.close();
-        return;
+        if (relay.pendingLogin) {
+          printInfo("ChatGPT login is in progress in the helper window. Closing this session for a clean handoff.");
+          await terminateTerminalSession(rl, config);
+          return;
+        } else {
+          printError("ChatGPT gateway failed to connect or authenticate.");
+          printWarning("Gracefully falling back to default LLM: 'ollama'...");
+          config.backend = "ollama";
+          await saveConfig(config);
+          setUiConfig(config);
+        }
       }
     } catch (error) {
       printError(`ChatGPT relay startup failed: ${error.message}`);
-      rl.close();
-      return;
+      printWarning("Gracefully falling back to default LLM: 'ollama'...");
+      config.backend = "ollama";
+      await saveConfig(config);
+      setUiConfig(config);
     }
   }
 
-  // If no choose option or prompt is specified, always ask the user which chat to continue from by default!
-  if (!parsedArgs.choose && !parsedArgs.prompt) {
+  // Load chat chooser based on allowedFeatures and overrides
+  const showHistory = allowedFeatures.includes("chat-history");
+  if (showHistory && !parsedArgs.choose && !parsedArgs.prompt && !isNoOptionsCase) {
     parsedArgs.choose = "from-chat-history";
   }
 
-  if (parsedArgs.choose) {
+  if (parsedArgs.choose && parsedArgs.choose !== "from-chat-history") {
     const chooseVal = parsedArgs.choose;
-    if (chooseVal === "from-chat-history") {
-      try {
-        await chooseChatThread(rl, config, state);
-      } catch (error) {
-        printError(`Failed to load chat history: ${error.message}`);
-      }
-    } else if (chooseVal.startsWith("new:")) {
+    if (chooseVal.startsWith("new:")) {
       const chatName = chooseVal.slice(4);
       await resetSavedConversationState(state);
       printSuccess(`Starting new chat session: "${chatName}"`);
@@ -642,37 +886,57 @@ async function main() {
       await saveState(state);
       printSuccess(`Resuming specific chat ID: "${chooseVal}"`);
     }
+  } else if (parsedArgs.choose === "from-chat-history" && showHistory) {
+    try {
+      await chooseChatThread(rl, config, state);
+    } catch (error) {
+      printError(`Failed to load chat history: ${error.message}`);
+    }
+  } else {
+    // Default to fresh session if history selector is skipped
+    await resetSavedConversationState(state);
   }
 
   let initialPrompt = "";
+  let initialPromptDisplay = "";
   if (parsedArgs.prompt) {
-    const promptVal = parsedArgs.prompt;
-    if (promptVal.startsWith("txt:")) {
-      initialPrompt = promptVal.slice(4);
-    } else if (promptVal.startsWith("path:")) {
-      const filePath = promptVal.slice(5);
-      try {
-        initialPrompt = await fs.readFile(filePath, "utf8");
-      } catch (error) {
-        printError(`Failed to read prompt file "${filePath}": ${error.message}`);
-      }
-    } else {
-      initialPrompt = promptVal;
+    try {
+      const resolvedPrompt = await resolvePromptInput(parsedArgs.prompt, {
+        allowPromptFiles: allowedFeatures.includes("custom-prompt")
+      });
+      initialPrompt = resolvedPrompt.prompt;
+      initialPromptDisplay = resolvedPrompt.display;
+    } catch (error) {
+      printError(error.message);
     }
   }
 
-  printBanner(config, state);
+  if (isNoOptionsCase) {
+    console.log("\ndefault values");
+    console.log("-------------------------");
+    console.log(`model: ${getConfiguredModel(config) || "default"}`);
+    console.log("chat-name: default");
+    console.log(`bot-name: ${getAssistantLabel(config) || "default"}`);
+    console.log("-------------------------\n");
+  } else {
+    printBanner(config, state);
+  }
 
   while (true) {
     let line = "";
+    let displayLine = "";
+    let rawLine = "";
+    let muteThisTurn = false;
 
     if (initialPrompt) {
       line = initialPrompt;
+      displayLine = initialPromptDisplay || initialPrompt;
       initialPrompt = "";
+      initialPromptDisplay = "";
     } else {
       try {
         const prompt = getUserPrompt(config.identity.userLabel);
-        line = (await rl.question(prompt)).trim();
+        rawLine = (await rl.question(prompt)).trim();
       } catch (error) {
         if (error?.code === "ERR_USE_AFTER_CLOSE") {
           return;
@@ -681,14 +945,24 @@ async function main() {
         throw error;
       }
     }
-    if (!line) {
+
+    if (!line && !rawLine) {
       continue;
     }
 
-    if (line.startsWith("/")) {
-      const { command, args } = normalizeCommand(line);
+    if (!line && rawLine.toLowerCase().includes("/shh")) {
+      muteThisTurn = true;
+      rawLine = rawLine.replace(/\/shh/gi, "").trim();
+    }
 
-      if (command === "/quit" || command === "/exit") {
+    if (!line && !rawLine) {
+      continue;
+    }
+
+    if (!line && rawLine.startsWith("/")) {
+      const { command, args } = normalizeCommand(rawLine);
+
+      if (command === "/quit" || command === "/exit" || command === "/q") {
         await terminateTerminalSession(rl, config);
         return;
       }
@@ -699,6 +973,10 @@ async function main() {
       }
 
       if (command === "/login") {
+        if (!allowedFeatures.includes("signin")) {
+          printWarning("Sign-in operations are disabled in this environment.");
+          continue;
+        }
         if (config.backend !== "sengpt") {
           printWarning("`/login` is only for the older Sengpt backend.");
           continue;
@@ -717,12 +995,52 @@ async function main() {
         continue;
       }
 
-      if (command === "/backend") {
+      if (command === "/llm") {
         const backend = args[0]?.toLowerCase();
         if (!SUPPORTED_BACKENDS.includes(backend)) {
-          printWarning("Usage: /backend chatgpt-browser, /backend ollama, or /backend sengpt");
+          printWarning("Usage: /llm chatgpt-browser, /llm ollama, /llm openai, or /llm claude");
           continue;
         }
+
+        const previousBackend = config.backend;
+
+        if (backend === "chatgpt-browser") {
+          try {
+            // Set temporary backend value for getBackendStatus checks
+            config.backend = "chatgpt-browser";
+            const relay = await ensureChatgptRelayReady(config, allowedFeatures);
+            if (!relay.ready) {
+              if (relay.pendingLogin) {
+                config.backend = "chatgpt-browser";
+                resetLocalConversationState(state);
+                await saveConfig(config);
+                await saveState(state);
+                setUiConfig(config);
+                printInfo("ChatGPT sign-in is continuing in the helper window. Closing this session for a clean handoff.");
+                await terminateTerminalSession(rl, config);
+                return;
+              }
+
+              printError("ChatGPT gateway failed to connect or authenticate.");
+              printWarning(`Gracefully falling back to your previous LLM backend: "${previousBackend}"`);
+              config.backend = previousBackend;
+              await saveConfig(config);
+              setUiConfig(config);
+              continue;
+            }
+          } catch (error) {
+            printError(`ChatGPT login/connection failed: ${error.message}`);
+            printWarning(`Gracefully falling back to your previous LLM backend: "${previousBackend}"`);
+            config.backend = previousBackend;
+            await saveConfig(config);
+            setUiConfig(config);
+            continue;
+          }
+        }
+
+        try {
+          await mcpClientInstance.close();
+        } catch (e) {}
 
         config.backend = backend;
         resetLocalConversationState(state);
@@ -730,6 +1048,20 @@ async function main() {
         setUiConfig(config);
         await saveState(state);
         printSuccess(`Backend set to ${backend}. Started a fresh conversation.`);
+
+        if (isNoOptionsCase) {
+          console.log("\ndefault values");
+          console.log("-------------------------");
+          console.log(`model: ${getConfiguredModel(config) || "default"}`);
+          console.log("chat-name: default");
+          console.log(`bot-name: ${getAssistantLabel(config) || "default"}`);
+          console.log("-------------------------\n");
+        }
+
+        if (backend === "ollama") {
+          printInfo("Connecting to Smart Home MCP server...");
+          await mcpClientInstance.connect();
+        }
         continue;
       }
 
@@ -752,6 +1084,10 @@ async function main() {
       }
 
       if (command === "/chatgpt") {
+        if (!allowedFeatures.includes("signin")) {
+          printWarning("Sign-in operations are disabled in this environment.");
+          continue;
+        }
         const action = args[0]?.toLowerCase();
 
         try {
@@ -783,6 +1119,38 @@ async function main() {
             return;
           }
 
+          if (action === "chatlist") {
+            const previousBackend = config.backend;
+            config.backend = "chatgpt-browser";
+            setUiConfig(config);
+
+            const relay = await ensureChatgptRelayReady(config, allowedFeatures);
+            if (!relay.ready) {
+              if (relay.pendingLogin) {
+                resetLocalConversationState(state);
+                await saveConfig(config);
+                await saveState(state);
+                printInfo("ChatGPT sign-in is continuing in the helper window. Closing this session for a clean handoff.");
+                await terminateTerminalSession(rl, config);
+                return;
+              }
+
+              config.backend = previousBackend;
+              await saveConfig(config);
+              setUiConfig(config);
+              printError("ChatGPT gateway failed to connect or authenticate.");
+              continue;
+            }
+
+            await saveConfig(config);
+            setUiConfig(config);
+            await chooseChatThread(rl, config, state, {
+              pageSize: 10,
+              title: "CHAT LIST"
+            });
+            continue;
+          }
+
           if (action === "stop") {
             const output = await stopChatgptGateway();
             printSuccess(output || "ChatGPT gateway stopped.");
@@ -793,7 +1161,7 @@ async function main() {
           continue;
         }
 
-        printWarning("Usage: /chatgpt setup, /chatgpt start, /chatgpt login, or /chatgpt stop");
+        printWarning("Usage: /chatgpt setup, /chatgpt start, /chatgpt login, /chatgpt chatlist, or /chatgpt stop");
         continue;
       }
 
@@ -857,6 +1225,10 @@ async function main() {
       }
 
       if (command === "/tts") {
+        if (options.allowTts === false) {
+          printWarning("Text-to-speech is completely disabled in this environment.");
+          continue;
+        }
         const option = args[0]?.toLowerCase();
         if (option === "on") {
           config.tts.enabled = true;
@@ -888,6 +1260,10 @@ async function main() {
       }
 
       if (command === "/voice") {
+        if (options.allowTts === false) {
+          printWarning("Text-to-speech is completely disabled in this environment.");
+          continue;
+        }
         const option = args[0]?.toLowerCase();
         if (option === "list") {
           const voices = await listVoices();
@@ -935,6 +1311,10 @@ async function main() {
       }
 
       if (command === "/repeat") {
+        if (!allowedFeatures.includes("regenerate")) {
+          printWarning("Regenerate features are disabled in this environment.");
+          continue;
+        }
         if (!state.lastResponse) {
           printWarning("There is no response to replay yet.");
           continue;
@@ -966,6 +1346,12 @@ async function main() {
           config.ollama.model = model;
         } else if (config.backend === "chatgpt-browser") {
           config.chatgptBrowser.model = model;
+        } else if (config.backend === "openai") {
+          config.openai.model = model;
+        } else if (config.backend === "claude") {
+          config.claude.model = model;
+        } else if (config.backend === "gemini") {
+          config.gemini.model = model;
         } else {
           config.sengpt.model = model;
         }
@@ -992,11 +1378,28 @@ async function main() {
         continue;
       }
 
-      const suggestions = rankCommandSuggestions(line);
+      const suggestions = rankCommandSuggestions(rawLine);
       printWarning("Unknown command. Type /help or press Tab for autocomplete.");
       if (suggestions.length) {
         printInfo(`Suggestions: ${suggestions.join("  |  ")}`);
       }
+      continue;
+    }
+
+    if (!line) {
+      try {
+        const resolvedPrompt = await resolvePromptInput(rawLine, {
+          allowPromptFiles: allowedFeatures.includes("custom-prompt")
+        });
+        line = resolvedPrompt.prompt;
+        displayLine = resolvedPrompt.display || resolvedPrompt.prompt;
+      } catch (error) {
+        printError(error.message);
+        continue;
+      }
+    }
+
+    if (!line) {
       continue;
     }
 
@@ -1006,7 +1409,7 @@ async function main() {
       readlineUi.cursorTo(output, 0);
     }
 
-    printUserMessage(config.identity.userLabel, line);
+    printUserMessage(config.identity.userLabel, displayLine || line);
 
     const backendStatus = await getBackendStatus(config);
     if (config.backend === "sengpt" && !backendStatus.hasToken) {
@@ -1057,6 +1460,7 @@ async function main() {
       await appendTranscript({
         timestamp: new Date().toISOString(),
         prompt: line,
+        promptDisplay: displayLine && displayLine !== line ? displayLine : undefined,
         response: state.lastResponse,
         conversationId: state.conversationId,
         backend: config.backend,
@@ -1065,7 +1469,7 @@ async function main() {
 
       await saveState(state);
 
-      if (config.tts.enabled && state.lastResponse) {
+      if (config.tts.enabled && !muteThisTurn && state.lastResponse) {
         void speakText(state.lastResponse, config.tts, config).catch((error) => {
           printError(error.message);
         });
@@ -1078,7 +1482,19 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  printError(error.stack || error.message);
-  process.exit(1);
-});
+// Execute automatically when run directly from the command line
+import { fileURLToPath } from "node:url";
+import fsSync from "node:fs";
+
+const isMain = process.argv[1] && (
+  fileURLToPath(import.meta.url) === fsSync.realpathSync(process.argv[1]) ||
+  process.argv[1].endsWith("src/index.js") ||
+  process.argv[1].endsWith("bin/terminal-chat")
+);
+
+if (isMain) {
+  runTerminalChat().catch((error) => {
+    printError(error.stack || error.message);
+    process.exit(1);
+  });
+}

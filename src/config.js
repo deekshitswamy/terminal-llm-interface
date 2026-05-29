@@ -15,7 +15,7 @@ const DEFAULT_RESPONSE_STYLE = [
 const DEFAULT_CONFIG = {
   backend: "chatgpt-browser",
   chatgptBrowser: {
-    baseUrl: "http://127.0.0.1:8000/v1",
+    baseUrl: "http://127.0.0.1:8001/v1",
     apiToken: "terminal-chat-local",
     model: "catgpt-browser"
   },
@@ -31,8 +31,23 @@ const DEFAULT_CONFIG = {
     sessionTokenChunk1: "",
     extraCookies: ""
   },
+  openai: {
+    baseUrl: "https://api.openai.com/v1",
+    apiKey: "",
+    model: "gpt-4o"
+  },
+  claude: {
+    baseUrl: "https://api.anthropic.com/v1",
+    apiKey: "",
+    model: "claude-3-5-sonnet"
+  },
+  gemini: {
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+    apiKey: "",
+    model: "gemini-1.5-pro"
+  },
   tts: {
-    enabled: true,
+    enabled: false,
     engine: "say",
     voice: "Samantha",
     rate: 190
@@ -42,8 +57,8 @@ const DEFAULT_CONFIG = {
     glyphs: DEFAULT_GLYPH_ID
   },
   identity: {
-    userLabel: "operator",
-    assistantLabel: "chatgpt"
+    userLabel: "Deeku",
+    assistantLabel: "D.I.V.Y.A"
   },
   terminal: {
     autoRestartRelay: true
@@ -95,6 +110,21 @@ export async function loadConfig() {
   config.ollama = {
     ...DEFAULT_CONFIG.ollama,
     ...(config.ollama ?? {})
+  };
+
+  config.openai = {
+    ...DEFAULT_CONFIG.openai,
+    ...(config.openai ?? {})
+  };
+
+  config.claude = {
+    ...DEFAULT_CONFIG.claude,
+    ...(config.claude ?? {})
+  };
+
+  config.gemini = {
+    ...DEFAULT_CONFIG.gemini,
+    ...(config.gemini ?? {})
   };
 
   config.tts = {

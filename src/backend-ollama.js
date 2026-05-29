@@ -1,3 +1,5 @@
+import { mcpClientInstance } from "./mcp-client.js";
+
 async function parseErrorResponse(response) {
   try {
     const data = await response.json();
@@ -65,7 +67,17 @@ export async function resetOllamaConversation() {
 }
 
 export async function sendOllamaMessage({ config, state, prompt, onChunk }) {
-  const messages = [
+  const mcpTools = mcpClientInstance.getTools();
+  const ollamaTools = mcpTools.map(t => ({
+    type: "function",
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.inputSchema
+    }
+  }));
+
+  const currentMessages = [
     {
       role: "system",
       content: config.stylePrompt
@@ -77,65 +89,95 @@ export async function sendOllamaMessage({ config, state, prompt, onChunk }) {
     }
   ];
 
-  const response = await fetch(`${config.ollama.baseUrl}/api/chat`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: config.ollama.model,
-      messages,
-      stream: true
-    })
-  });
+  let loopCount = 0;
+  const maxLoops = 5;
 
-  if (!response.ok) {
-    throw new Error(await parseErrorResponse(response));
-  }
+  while (loopCount < maxLoops) {
+    loopCount++;
+    const hasTools = ollamaTools.length > 0;
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffered = "";
-  let fullResponse = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-
-    buffered += decoder.decode(value, { stream: true });
-    const lines = buffered.split("\n");
-    buffered = lines.pop() ?? "";
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        continue;
-      }
-
-      const event = JSON.parse(trimmed);
-      const chunk = event.message?.content || "";
-
-      if (chunk) {
-        fullResponse += chunk;
-        onChunk(chunk);
-      }
-    }
-  }
-
-  return {
-    response: fullResponse,
-    messages: [
-      ...state.messages,
-      {
-        role: "user",
-        content: prompt
+    const response = await fetch(`${config.ollama.baseUrl}/api/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
       },
-      {
-        role: "assistant",
-        content: fullResponse
+      body: JSON.stringify({
+        model: config.ollama.model,
+        messages: currentMessages,
+        tools: hasTools ? ollamaTools : undefined,
+        stream: false
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(await parseErrorResponse(response));
+    }
+
+    const data = await response.json();
+    const assistantMessage = data.message;
+
+    // Check if Ollama requested any tool calls
+    if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
+      // Append assistant's tool call request to conversation history
+      currentMessages.push(assistantMessage);
+
+      // Execute each tool call synchronously
+      for (const toolCall of assistantMessage.tool_calls) {
+        const toolName = toolCall.function.name;
+        const toolArgs = toolCall.function.arguments;
+
+        onChunk(`\n⚙️  [MCP Tool] ${toolName}...`);
+
+        try {
+          const toolResult = await mcpClientInstance.callTool(toolName, toolArgs);
+          const resultText = toolResult.content.map(c => c.text).join("\n");
+
+          currentMessages.push({
+            role: "tool",
+            content: resultText,
+            name: toolName
+          });
+          onChunk(" Success!\n");
+        } catch (err) {
+          const errorMsg = `Error: ${err.message}`;
+          currentMessages.push({
+            role: "tool",
+            content: errorMsg,
+            name: toolName
+          });
+          onChunk(` Failed: ${err.message}\n`);
+        }
       }
-    ]
-  };
+
+      // Loop again to feed results back to the LLM
+      continue;
+    }
+
+    // No tool calls: we have the final assistant text response
+    const finalText = assistantMessage.content || "";
+
+    // Typewriter effect simulation to align with terminal chat UI chunk drawing
+    const chunkSize = 4;
+    for (let i = 0; i < finalText.length; i += chunkSize) {
+      onChunk(finalText.slice(i, i + chunkSize));
+      await new Promise(r => setTimeout(r, 3));
+    }
+
+    return {
+      response: finalText,
+      messages: [
+        ...state.messages,
+        {
+          role: "user",
+          content: prompt
+        },
+        {
+          role: "assistant",
+          content: finalText
+        }
+      ]
+    };
+  }
+
+  throw new Error("Exceeded maximum tool-calling recursion loops.");
 }

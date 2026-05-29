@@ -5,6 +5,7 @@ set -euo pipefail
 APP_ROOT="${HOME}/Library/Application Support/terminal-chat"
 GATEWAY_DIR="${APP_ROOT}/catgpt-gateway"
 GATEWAY_REPO="https://github.com/GautamVhavle/CatGPT-Gateway.git"
+PATCH_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/patch-chatgpt-gateway.py"
 
 mkdir -p "${APP_ROOT}"
 
@@ -28,8 +29,9 @@ lines = env_path.read_text().splitlines()
 updates = {
     "PROVIDER": "chatgpt",
     "API_TOKEN": "terminal-chat-local",
-    "API_PORT": "8000",
-    "HEADLESS": "true",
+    "API_PORT": "8001",
+    "HEADLESS": "false",
+    "HIDE_BROWSER_WINDOWS": "true",
     "SLOW_MO": "0",
     "SELECTOR_TIMEOUT": "6000",
     "POLL_INTERVAL_MS": "250",
@@ -72,5 +74,6 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 patchright install chromium
+python3 "${PATCH_SCRIPT}"
 
 echo "ChatGPT gateway is ready at ${GATEWAY_DIR}"
